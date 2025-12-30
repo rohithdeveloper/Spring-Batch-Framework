@@ -5,7 +5,8 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
-import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.partition.PartitionHandler;
+import org.springframework.batch.core.partition.support.TaskExecutorPartitionHandler;
 import org.springframework.batch.item.data.RepositoryItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.LineMapper;
@@ -15,10 +16,11 @@ import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import com.example.demo.model.Customer;
+import com.example.demo.partition.ColumnRangePartitioner;
 import com.example.demo.repository.CustomerRepository;
 
 import lombok.AllArgsConstructor;
@@ -34,6 +36,8 @@ public class SpringBatchConfig {
 	private StepBuilderFactory stepBuilderFactory;
 
 	private CustomerRepository customerRepository;
+	
+	private CustomerWriter customerWriter;
 
 	@Bean
 	public FlatFileItemReader<Customer> reader() {
@@ -85,18 +89,65 @@ public class SpringBatchConfig {
 	                .build();
 	    }
 
-	 	@Bean
-	    public Job runJob() {
-	        return jobBuilderFactory.get("importCustomers")
-	                .flow(step1()).end().build();
-
-	    }
+//	 	@Bean
+//	    public Job runJob() {
+//	        return jobBuilderFactory.get("importCustomers")
+//	                .flow(step1()).end().build();
+//
+//	    }
 
 	    @Bean
-	    public TaskExecutor taskExecutor() {
-	        SimpleAsyncTaskExecutor asyncTaskExecutor = new SimpleAsyncTaskExecutor();
-	        asyncTaskExecutor.setConcurrencyLimit(10);
-	        return asyncTaskExecutor;
+	    public Job runJob() {
+	        return jobBuilderFactory.get("importCustomers")
+	                .flow(masterStep()).end().build();
+
 	    }
+	 	 @Bean
+	     public ColumnRangePartitioner partitioner() {
+	         return new ColumnRangePartitioner();
+	     }
+
+	     @Bean
+	     public PartitionHandler partitionHandler() {
+	         TaskExecutorPartitionHandler taskExecutorPartitionHandler = new TaskExecutorPartitionHandler();
+	         taskExecutorPartitionHandler.setGridSize(4);
+	         taskExecutorPartitionHandler.setTaskExecutor(taskExecutor());
+	         taskExecutorPartitionHandler.setStep(slaveStep());
+	         return taskExecutorPartitionHandler;
+	     }
+	     
+	     @Bean
+	     public Step slaveStep() {
+	         return stepBuilderFactory.get("slaveStep").<Customer, Customer>chunk(250)
+	                 .reader(reader())
+	                 .processor(processor())
+	                 .writer(customerWriter)
+	                 .build();
+	     }
+
+	     @Bean
+	     public Step masterStep() {
+	         return stepBuilderFactory.get("masterStep").
+	                 partitioner(slaveStep().getName(), partitioner())
+	                 .partitionHandler(partitionHandler())
+	                 .build();
+	     }
+
+//	    @Bean
+//	    public TaskExecutor taskExecutor() {
+//	        SimpleAsyncTaskExecutor asyncTaskExecutor = new SimpleAsyncTaskExecutor();
+//	        asyncTaskExecutor.setConcurrencyLimit(10);
+//	        return asyncTaskExecutor;
+//	    }
+	     
+	     @Bean
+	     public TaskExecutor taskExecutor() {
+	         ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+	         taskExecutor.setMaxPoolSize(4);
+	         taskExecutor.setCorePoolSize(4);
+	         taskExecutor.setQueueCapacity(4);
+	         return taskExecutor;
+	     }
+
 
 }
