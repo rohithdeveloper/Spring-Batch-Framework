@@ -26,128 +26,213 @@ import com.example.demo.repository.CustomerRepository;
 import lombok.AllArgsConstructor;
 
 
-@Configuration
-@EnableBatchProcessing
-@AllArgsConstructor
+@Configuration // Marks this class as Spring configuration
+@EnableBatchProcessing // Enables Spring Batch features (creates JobRepository, JobLauncher, etc.)
+@AllArgsConstructor // Lombok annotation for constructor injection
 public class SpringBatchConfig {
 
-	private JobBuilderFactory jobBuilderFactory;
+    // Factory used to build Jobs
+    private JobBuilderFactory jobBuilderFactory;
 
-	private StepBuilderFactory stepBuilderFactory;
+    // Factory used to build Steps
+    private StepBuilderFactory stepBuilderFactory;
 
-	private CustomerRepository customerRepository;
-	
-	private CustomerWriter customerWriter;
+    // JPA repository to save Customer data
+    private CustomerRepository customerRepository;
+    
+    // Custom writer implementation (used in partitioned step)
+    private CustomerWriter customerWriter;
 
-	@Bean
-	public FlatFileItemReader<Customer> reader() {
-		FlatFileItemReader<Customer> itemReader = new FlatFileItemReader<>();
-		itemReader.setResource(new FileSystemResource("src/main/resources/customers.csv"));
-		itemReader.setName("csvReader");
-		itemReader.setLinesToSkip(1);
-		itemReader.setLineMapper(lineMapper());
-		return itemReader;
-	}
+    // ===================== READER =====================
 
-	private LineMapper<Customer> lineMapper() {
-		DefaultLineMapper<Customer> lineMapper = new DefaultLineMapper<>();
+    @Bean
+    public FlatFileItemReader<Customer> reader() {
 
-		DelimitedLineTokenizer lineTokenizer = new DelimitedLineTokenizer();
-		lineTokenizer.setDelimiter(",");
-		lineTokenizer.setStrict(false);
-		lineTokenizer.setNames("id", "firstName", "lastName", "email", "gender", "contactNo", "country", "dob");
+        // Reader to read data from a CSV file
+        FlatFileItemReader<Customer> itemReader = new FlatFileItemReader<>();
 
-		BeanWrapperFieldSetMapper<Customer> fieldSetMapper = new BeanWrapperFieldSetMapper<>();
-		fieldSetMapper.setTargetType(Customer.class);
+        // File location
+        itemReader.setResource(new FileSystemResource("src/main/resources/customers.csv"));
 
-		lineMapper.setLineTokenizer(lineTokenizer);
-		lineMapper.setFieldSetMapper(fieldSetMapper);
-		return lineMapper;
+        // Name of the reader
+        itemReader.setName("csvReader");
 
-	}
+        // Skip header row (first line)
+        itemReader.setLinesToSkip(1);
 
-	@Bean
-	public CustomerProcessor processor() {
-		return new CustomerProcessor();
-	}
+        // Set line mapper (maps CSV row → Customer object)
+        itemReader.setLineMapper(lineMapper());
 
-	@Bean
-	public RepositoryItemWriter<Customer> writer() {
-		RepositoryItemWriter<Customer> writer = new RepositoryItemWriter<>();
-		writer.setRepository(customerRepository);
-		writer.setMethodName("save");
-		return writer;
-	}
+        return itemReader;
+    }
 
-	 	@Bean
-	    public Step step1() {
-	        return stepBuilderFactory.get("csv-step").<Customer, Customer>chunk(10)
-	                .reader(reader())
-	                .processor(processor())
-	                .writer(writer())
-	                .taskExecutor(taskExecutor())
-	                .build();
-	    }
+    // Maps CSV columns to Customer fields
+    private LineMapper<Customer> lineMapper() {
 
-//	 	@Bean
-//	    public Job runJob() {
-//	        return jobBuilderFactory.get("importCustomers")
-//	                .flow(step1()).end().build();
-//
-//	    }
+        DefaultLineMapper<Customer> lineMapper = new DefaultLineMapper<>();
 
-	    @Bean
-	    public Job runJob() {
-	        return jobBuilderFactory.get("importCustomers")
-	                .flow(masterStep()).end().build();
+        // Tokenizer splits CSV line based on comma
+        DelimitedLineTokenizer lineTokenizer = new DelimitedLineTokenizer();
+        lineTokenizer.setDelimiter(",");
+        lineTokenizer.setStrict(false);
 
-	    }
-	 	 @Bean
-	     public ColumnRangePartitioner partitioner() {
-	         return new ColumnRangePartitioner();
-	     }
+        // These column names must match Customer class fields
+        lineTokenizer.setNames(
+            "id", "firstName", "lastName", "email",
+            "gender", "contactNo", "country", "dob"
+        );
 
-	     @Bean
-	     public PartitionHandler partitionHandler() {
-	         TaskExecutorPartitionHandler taskExecutorPartitionHandler = new TaskExecutorPartitionHandler();
-	         taskExecutorPartitionHandler.setGridSize(4);
-	         taskExecutorPartitionHandler.setTaskExecutor(taskExecutor());
-	         taskExecutorPartitionHandler.setStep(slaveStep());
-	         return taskExecutorPartitionHandler;
-	     }
-	     
-	     @Bean
-	     public Step slaveStep() {
-	         return stepBuilderFactory.get("slaveStep").<Customer, Customer>chunk(250)
-	                 .reader(reader())
-	                 .processor(processor())
-	                 .writer(customerWriter)
-	                 .build();
-	     }
+        // Maps tokenized values to Customer object
+        BeanWrapperFieldSetMapper<Customer> fieldSetMapper =
+                new BeanWrapperFieldSetMapper<>();
+        fieldSetMapper.setTargetType(Customer.class);
 
-	     @Bean
-	     public Step masterStep() {
-	         return stepBuilderFactory.get("masterStep").
-	                 partitioner(slaveStep().getName(), partitioner())
-	                 .partitionHandler(partitionHandler())
-	                 .build();
-	     }
+        lineMapper.setLineTokenizer(lineTokenizer);
+        lineMapper.setFieldSetMapper(fieldSetMapper);
 
-//	    @Bean
-//	    public TaskExecutor taskExecutor() {
-//	        SimpleAsyncTaskExecutor asyncTaskExecutor = new SimpleAsyncTaskExecutor();
-//	        asyncTaskExecutor.setConcurrencyLimit(10);
-//	        return asyncTaskExecutor;
-//	    }
-	     
-	     @Bean
-	     public TaskExecutor taskExecutor() {
-	         ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
-	         taskExecutor.setMaxPoolSize(4);
-	         taskExecutor.setCorePoolSize(4);
-	         taskExecutor.setQueueCapacity(4);
-	         return taskExecutor;
-	     }
+        return lineMapper;
+    }
+
+    // ===================== PROCESSOR =====================
+
+    @Bean
+    public CustomerProcessor processor() {
+        // Used for validation / transformation logic
+        return new CustomerProcessor();
+    }
+
+    // ===================== WRITER =====================
+
+    @Bean
+    public RepositoryItemWriter<Customer> writer() {
+
+        // Writer that uses Spring Data JPA repository
+        RepositoryItemWriter<Customer> writer =
+                new RepositoryItemWriter<>();
+
+        // Inject repository
+        writer.setRepository(customerRepository);
+
+        // Calls save() method for each item
+        writer.setMethodName("save");
+
+        return writer;
+    }
+
+    // ===================== SIMPLE STEP (Non-Partitioned) =====================
+
+    @Bean
+    public Step step1() {
+
+        return stepBuilderFactory.get("csv-step")
+
+                // Chunk size = 10 (10 records per transaction)
+                .<Customer, Customer>chunk(10)
+
+                .reader(reader())
+                .processor(processor())
+                .writer(writer())
+
+                // Enables multithreading
+                .taskExecutor(taskExecutor())
+
+                .build();
+    }
+
+    // ===================== JOB =====================
+
+    @Bean
+    public Job runJob() {
+
+        // Job starts with masterStep (partitioned step)
+        return jobBuilderFactory.get("importCustomers")
+                .flow(masterStep())
+                .end()
+                .build();
+    }
+
+    // ===================== PARTITIONING =====================
+
+    // Custom partitioner (splits workload into partitions)
+    @Bean
+    public ColumnRangePartitioner partitioner() {
+        return new ColumnRangePartitioner();
+    }
+
+    // Handles execution of partitions using multiple threads
+    @Bean
+    public PartitionHandler partitionHandler() {
+
+        TaskExecutorPartitionHandler taskExecutorPartitionHandler =
+                new TaskExecutorPartitionHandler();
+
+        // Number of parallel partitions
+        taskExecutorPartitionHandler.setGridSize(4);
+
+        // Thread pool executor
+        taskExecutorPartitionHandler.setTaskExecutor(taskExecutor());
+
+        // Each partition runs slaveStep
+        taskExecutorPartitionHandler.setStep(slaveStep());
+
+        return taskExecutorPartitionHandler;
+    }
+
+    // ===================== SLAVE STEP =====================
+
+    @Bean
+    public Step slaveStep() {
+
+        return stepBuilderFactory.get("slaveStep")
+
+                // Each chunk processes 250 records per transaction
+                .<Customer, Customer>chunk(250)
+
+                .reader(reader())
+                .processor(processor())
+
+                // Using custom writer
+                .writer(customerWriter)
+
+                .build();
+    }
+
+    // ===================== MASTER STEP =====================
+
+    @Bean
+    public Step masterStep() {
+
+        return stepBuilderFactory.get("masterStep")
+
+                // Partitioning slaveStep into multiple partitions
+                .partitioner(slaveStep().getName(), partitioner())
+
+                // Handles parallel execution
+                .partitionHandler(partitionHandler())
+
+                .build();
+    }
+
+    // ===================== THREAD POOL =====================
+
+    @Bean
+    public TaskExecutor taskExecutor() {
+
+        ThreadPoolTaskExecutor taskExecutor =
+                new ThreadPoolTaskExecutor();
+
+        // 4 threads minimum
+        taskExecutor.setCorePoolSize(4);
+
+        // Max 4 threads
+        taskExecutor.setMaxPoolSize(4);
+
+        // Queue capacity
+        taskExecutor.setQueueCapacity(4);
+
+        return taskExecutor;
+    }
+}
 
 
 }
